@@ -9018,7 +9018,8 @@ def _merged_plugins_hub() -> Dict[str, Any]:
 @app.get("/api/dashboard/plugins/hub")
 async def get_plugins_hub(request: Request):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
-    _require_token(request)
+    if not getattr(request.app.state, "auth_required", False):
+        _require_token(request)
     try:
         return _merged_plugins_hub()
     except Exception as exc:

@@ -78,7 +78,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     return (
       <div
         className={cn(
-          "px-5 py-2 text-[0.65rem] tracking-[0.05em] text-muted-foreground/70",
+          "px-5 py-1.5 text-[0.65rem] tracking-[0.05em] text-muted-foreground/70",
           className,
         )}
       >
@@ -93,7 +93,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     return (
       <div
         className={cn(
-          "h-9 px-5 py-2 text-[0.65rem] text-muted-foreground/40",
+          "h-7 px-5 py-1.5 text-[0.65rem] text-muted-foreground/40",
           className,
         )}
         aria-busy="true"
@@ -116,27 +116,29 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     <div
       className={cn(
         "flex shrink-0 items-center justify-between gap-2",
-        "px-5 py-2",
+        "px-5 py-1.5",
         "border-t border-current/10",
         "text-[0.65rem] tracking-[0.05em]",
         className,
       )}
       role="status"
-      aria-label={`Logged in as ${label}`}
+      aria-label={`Logged in as ${label} via ${me.provider}`}
+      title={`Logged in as ${label} via ${me.provider}`}
     >
-      <div className="flex min-w-0 flex-col">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
         <span className="truncate font-mono text-foreground/90" title={me.user_id}>
           {label}
         </span>
+        <span className="shrink-0 text-muted-foreground/50">·</span>
         <span className="truncate text-muted-foreground/70">
-          via {me.provider}
+          {me.provider}
         </span>
       </div>
       <button
         type="button"
         onClick={handleLogout}
         className={cn(
-          "shrink-0 rounded p-1.5 text-muted-foreground/70",
+          "shrink-0 rounded p-1 text-muted-foreground/70",
           "transition-colors hover:bg-current/10 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
         )}
