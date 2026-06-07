@@ -21,6 +21,7 @@
     Card, CardContent,
     Badge, Button, Input, Label, Select, SelectOption,
   } = SDK.components;
+  const PluginSlot = SDK.components.PluginSlot || function () { return null; };
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
   const { cn, timeAgo } = SDK.utils;
 
@@ -987,6 +988,7 @@
 
     return h(ErrorBoundary, null,
       h("div", { className: "hermes-kanban flex flex-col gap-4" },
+        h(PluginSlot, { name: "kanban:top" }),
         h(BoardSwitcher, {
           board: board,
           boardList: boardList,
@@ -1056,6 +1058,7 @@
           assignees: (boardData && boardData.assignees) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
+        h(PluginSlot, { name: "kanban:bottom" }),
       ),
     );
   }

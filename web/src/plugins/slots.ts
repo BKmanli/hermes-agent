@@ -56,6 +56,11 @@ import React, { Fragment, useEffect, useState } from "react";
  *  - `docs:bottom`      — bottom of /docs page
  *  - `chat:top`         — top of /chat page (above the composer, when embedded chat is on)
  *  - `chat:bottom`      — bottom of /chat page
+ *  - `kanban:top`       — top of the bundled Kanban dashboard plugin page
+ *  - `kanban:bottom`    — bottom of the bundled Kanban dashboard plugin page
+ *  - `models:top`       — top of /models page
+ *  - `models:bottom`    — bottom of /models page
+ *  - `sidebar:system-status` — inside the System sidebar status block
  */
 export const KNOWN_SLOT_NAMES = [
   // Shell-wide
@@ -90,6 +95,11 @@ export const KNOWN_SLOT_NAMES = [
   "docs:bottom",
   "chat:top",
   "chat:bottom",
+  "kanban:top",
+  "kanban:bottom",
+  "models:top",
+  "models:bottom",
+  "sidebar:system-status",
 ] as const;
 
 export type KnownSlotName = (typeof KNOWN_SLOT_NAMES)[number];

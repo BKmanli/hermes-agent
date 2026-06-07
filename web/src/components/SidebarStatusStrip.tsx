@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import type { StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
 
 /** Gateway + session summary for the System sidebar block (no separate strip chrome). */
 export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
@@ -43,6 +44,8 @@ export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
             {status.active_sessions}
           </span>
         </p>
+
+        <PluginSlot name="sidebar:system-status" />
       </div>
     </Link>
   );
