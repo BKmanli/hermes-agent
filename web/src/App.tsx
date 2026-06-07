@@ -918,7 +918,6 @@ function SidebarSystemActions({
             key={item.action}
             collapsed={collapsed}
             disabled={isBusy && !(pendingAction === item.action || (activeAction === item.action && isRunning))}
-            tooltipWarmRef={tooltipWarmRef}
             isPending={pendingAction === item.action}
             isRunning={activeAction === item.action && isRunning && pendingAction !== item.action}
             item={item}
@@ -937,21 +936,13 @@ function SystemActionButton({
   isRunning: isActionRunning,
   item,
   onClick,
-  tooltipWarmRef,
 }: SystemActionButtonProps) {
   const { icon: Icon, label, runningLabel, spin } = item;
-  const liRef = useRef<HTMLLIElement>(null);
-  const [hovered, setHovered] = useState(false);
   const busy = isPending || isActionRunning;
   const displayLabel = isActionRunning ? runningLabel : label;
 
   return (
-    <li
-      ref={liRef}
-      data-hermes-system-action={item.action}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
+    <li data-hermes-system-action={item.action}>
       <button
         data-hermes-system-action-button="true"
         onClick={onClick}
@@ -959,8 +950,6 @@ function SystemActionButton({
         aria-busy={busy}
         aria-label={displayLabel}
         title={displayLabel}
-        onFocus={() => setHovered(true)}
-        onBlur={() => setHovered(false)}
         type="button"
         className={cn(
           "group/action relative flex w-full items-center gap-3",
@@ -1007,10 +996,6 @@ function SystemActionButton({
           />
         )}
       </button>
-
-      {hovered && liRef.current && (
-        <SidebarTooltip anchor={liRef.current} label={displayLabel} warmRef={tooltipWarmRef} />
-      )}
     </li>
   );
 }
@@ -1187,7 +1172,6 @@ interface SystemActionButtonProps {
   isRunning: boolean;
   item: SystemActionItem;
   onClick: () => void;
-  tooltipWarmRef: TooltipWarmRef;
 }
 
 interface SystemActionItem {
