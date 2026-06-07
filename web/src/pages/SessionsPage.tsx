@@ -1240,7 +1240,7 @@ export default function SessionsPage() {
             <span className="text-xs text-muted-foreground">Messages</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            <div className="flex basis-full flex-wrap items-center gap-1.5 sm:min-w-0 sm:flex-1 sm:basis-auto">
               {Object.entries(stats.by_source).map(([src, count]) => (
                 <Badge key={src} tone="outline" className="text-xs">
                   {src}: {count}
