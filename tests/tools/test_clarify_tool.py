@@ -155,6 +155,61 @@ class TestClarifyToolCallbackHandling:
         result = json.loads(clarify_tool("Q?", callback=mock_callback))
         assert result["user_response"] == "response with spaces"
 
+    def test_default_choice_applied_on_timeout_sentinel(self):
+        """Should use default_choice when the platform reports no user response."""
+        def timeout_callback(question: str, choices: Optional[List[str]]) -> str:
+            return "[user did not respond within 10m]"
+
+        result = json.loads(clarify_tool(
+            "Pick lane",
+            choices=["Thinking", "Pro", "Deep Research"],
+            default_choice="Thinking",
+            callback=timeout_callback,
+        ))
+        assert result["user_response"] == "Thinking"
+        assert result["default_choice"] == "Thinking"
+        assert result["default_applied"] is True
+        assert result["raw_user_response"] == "[user did not respond within 10m]"
+
+    def test_default_choice_index_normalizes_to_choice(self):
+        """Should accept a 1-based index as default_choice."""
+        def timeout_callback(question: str, choices: Optional[List[str]]) -> str:
+            return "[user did not respond within 10m]"
+
+        result = json.loads(clarify_tool(
+            "Pick lane",
+            choices=["Thinking", "Pro", "Deep Research"],
+            default_choice="1",
+            callback=timeout_callback,
+        ))
+        assert result["user_response"] == "Thinking"
+        assert result["default_choice"] == "Thinking"
+        assert result["default_applied"] is True
+
+    def test_default_choice_not_applied_when_user_responds(self):
+        """A real response should win over default_choice."""
+        result = json.loads(clarify_tool(
+            "Pick lane",
+            choices=["Thinking", "Pro", "Deep Research"],
+            default_choice="Thinking",
+            callback=lambda q, c: "Pro",
+        ))
+        assert result["user_response"] == "Pro"
+        assert result["default_choice"] == "Thinking"
+        assert result["default_applied"] is False
+        assert "raw_user_response" not in result
+
+    def test_invalid_default_choice_returns_error(self):
+        """default_choice must be one of the offered choices or a valid index."""
+        result = json.loads(clarify_tool(
+            "Pick lane",
+            choices=["Pro", "Deep Research"],
+            default_choice="Thinking",
+            callback=lambda q, c: "ignored",
+        ))
+        assert "error" in result
+        assert "default_choice" in result["error"]
+
 
 class TestCheckClarifyRequirements:
     """Tests for the requirements check function."""
@@ -183,6 +238,11 @@ class TestClarifySchema:
     def test_schema_choices_optional(self):
         """Choices parameter should be optional."""
         assert "choices" not in CLARIFY_SCHEMA["parameters"]["required"]
+
+    def test_schema_default_choice_optional(self):
+        """default_choice parameter should be available but optional."""
+        assert "default_choice" in CLARIFY_SCHEMA["parameters"]["properties"]
+        assert "default_choice" not in CLARIFY_SCHEMA["parameters"]["required"]
 
     def test_schema_choices_max_items(self):
         """Schema should specify max items for choices."""
