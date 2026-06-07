@@ -949,17 +949,18 @@ function SystemActionButton({
     <li
       ref={liRef}
       data-hermes-system-action={item.action}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       <button
         data-hermes-system-action-button="true"
         onClick={onClick}
         disabled={disabled}
         aria-busy={busy}
-        aria-label={collapsed ? displayLabel : undefined}
-        onFocus={collapsed ? () => setHovered(true) : undefined}
-        onBlur={collapsed ? () => setHovered(false) : undefined}
+        aria-label={displayLabel}
+        title={displayLabel}
+        onFocus={() => setHovered(true)}
+        onBlur={() => setHovered(false)}
         type="button"
         className={cn(
           "group/action relative flex w-full items-center gap-3",
@@ -1007,7 +1008,7 @@ function SystemActionButton({
         )}
       </button>
 
-      {collapsed && hovered && liRef.current && (
+      {hovered && liRef.current && (
         <SidebarTooltip anchor={liRef.current} label={displayLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
