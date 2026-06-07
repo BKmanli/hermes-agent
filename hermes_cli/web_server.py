@@ -7533,25 +7533,100 @@ async def get_models_analytics(days: int = 30):
     try:
         cutoff = time.time() - (days * 86400)
 
+        # The sessions table stores cumulative usage per conversation, but a
+        # long-running gateway session may temporarily fall back to another
+        # provider/model and later resume the primary.  Legacy rows are
+        # first-writer-wins for ``model``/``billing_provider`` (COALESCE in
+        # SessionDB.update_token_counts), so a compression/fallback turn can
+        # leave an impossible pair like ``gpt-5.5`` + ``deepseek`` even though
+        # DeepSeek never served GPT-5.5.  The dashboard is a model picker, not a
+        # forensic billing ledger, so normalize impossible legacy pairs back to
+        # the configured main provider when the configured provider has
+        # capabilities for the model and the stored provider does not.
+        cfg = load_config()
+        model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
+        main_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
+        main_provider = str(model_cfg.get("provider", "") or "")
+
+        try:
+            from agent.models_dev import get_model_capabilities
+        except Exception:  # pragma: no cover - defensive import guard
+            get_model_capabilities = None  # type: ignore[assignment]
+
+        def _normalize_legacy_provider(model_name: str, provider: str) -> str:
+            provider = provider or ""
+            if (
+                not get_model_capabilities
+                or not model_name
+                or not provider
+                or not main_model
+                or not main_provider
+                or model_name != main_model
+                or provider == main_provider
+            ):
+                return provider
+            try:
+                stored_caps = get_model_capabilities(provider=provider, model=model_name)
+                main_caps = get_model_capabilities(provider=main_provider, model=model_name)
+                if stored_caps is None and main_caps is not None:
+                    return main_provider
+            except Exception:
+                return provider
+            return provider
+
         cur = db._conn.execute("""
             SELECT model,
                    billing_provider,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls,
-                   SUM(tool_call_count) as tool_calls,
-                   MAX(started_at) as last_used_at,
-                   AVG(input_tokens + output_tokens) as avg_tokens_per_session
+                   input_tokens,
+                   output_tokens,
+                   cache_read_tokens,
+                   reasoning_tokens,
+                   COALESCE(estimated_cost_usd, 0) as estimated_cost,
+                   COALESCE(actual_cost_usd, 0) as actual_cost,
+                   COALESCE(api_call_count, 0) as api_calls,
+                   tool_call_count,
+                   started_at
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
-            GROUP BY model, billing_provider
-            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, (cutoff,))
-        rows = [dict(r) for r in cur.fetchall()]
+
+        grouped: dict[tuple[str, str], dict] = {}
+        for raw_row in [dict(r) for r in cur.fetchall()]:
+            model_name = raw_row["model"]
+            provider = _normalize_legacy_provider(
+                model_name,
+                raw_row.get("billing_provider") or "",
+            )
+            key = (model_name, provider)
+            row = grouped.setdefault(key, {
+                "model": model_name,
+                "billing_provider": provider,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "reasoning_tokens": 0,
+                "estimated_cost": 0.0,
+                "actual_cost": 0.0,
+                "sessions": 0,
+                "api_calls": 0,
+                "tool_calls": 0,
+                "last_used_at": 0,
+            })
+            row["input_tokens"] += raw_row.get("input_tokens") or 0
+            row["output_tokens"] += raw_row.get("output_tokens") or 0
+            row["cache_read_tokens"] += raw_row.get("cache_read_tokens") or 0
+            row["reasoning_tokens"] += raw_row.get("reasoning_tokens") or 0
+            row["estimated_cost"] += raw_row.get("estimated_cost") or 0
+            row["actual_cost"] += raw_row.get("actual_cost") or 0
+            row["sessions"] += 1
+            row["api_calls"] += raw_row.get("api_calls") or 0
+            row["tool_calls"] += raw_row.get("tool_call_count") or 0
+            row["last_used_at"] = max(row["last_used_at"], raw_row.get("started_at") or 0)
+
+        rows = sorted(
+            grouped.values(),
+            key=lambda r: (r["input_tokens"] or 0) + (r["output_tokens"] or 0),
+            reverse=True,
+        )
 
         models = []
         for row in rows:
@@ -7559,20 +7634,22 @@ async def get_models_analytics(days: int = 30):
             model_name = row["model"]
             caps = {}
             try:
-                from agent.models_dev import get_model_capabilities
-                mc = get_model_capabilities(provider=provider, model=model_name)
-                if mc is not None:
-                    caps = {
-                        "supports_tools": mc.supports_tools,
-                        "supports_vision": mc.supports_vision,
-                        "supports_reasoning": mc.supports_reasoning,
-                        "context_window": mc.context_window,
-                        "max_output_tokens": mc.max_output_tokens,
-                        "model_family": mc.model_family,
-                    }
+                if get_model_capabilities:
+                    mc = get_model_capabilities(provider=provider, model=model_name)
+                    if mc is not None:
+                        caps = {
+                            "supports_tools": mc.supports_tools,
+                            "supports_vision": mc.supports_vision,
+                            "supports_reasoning": mc.supports_reasoning,
+                            "context_window": mc.context_window,
+                            "max_output_tokens": mc.max_output_tokens,
+                            "model_family": mc.model_family,
+                        }
             except Exception:
                 pass
 
+            token_total = (row["input_tokens"] or 0) + (row["output_tokens"] or 0)
+            sessions = row["sessions"] or 0
             models.append({
                 "model": model_name,
                 "provider": provider,
@@ -7582,11 +7659,11 @@ async def get_models_analytics(days: int = 30):
                 "reasoning_tokens": row["reasoning_tokens"],
                 "estimated_cost": row["estimated_cost"],
                 "actual_cost": row["actual_cost"],
-                "sessions": row["sessions"],
+                "sessions": sessions,
                 "api_calls": row["api_calls"],
                 "tool_calls": row["tool_calls"],
                 "last_used_at": row["last_used_at"],
-                "avg_tokens_per_session": row["avg_tokens_per_session"],
+                "avg_tokens_per_session": (token_total / sessions) if sessions else 0,
                 "capabilities": caps,
             })
 

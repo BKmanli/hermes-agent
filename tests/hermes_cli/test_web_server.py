@@ -2410,6 +2410,61 @@ class TestNewEndpoints:
             "top_skills": [],
         }
 
+    def test_models_analytics_normalizes_impossible_legacy_provider_pair(self):
+        """Legacy fallback sessions must not render impossible model/provider cards."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        (get_hermes_home() / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.5\n"
+            "  provider: openai-codex\n"
+            "  base_url: https://chatgpt.com/backend-api/codex\n",
+            encoding="utf-8",
+        )
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="bad-legacy", source="discord", model="gpt-5.5")
+            db.update_token_counts(
+                "bad-legacy",
+                input_tokens=100,
+                output_tokens=10,
+                billing_provider="deepseek",
+                billing_base_url="https://api.deepseek.com/v1/",
+                model="deepseek-v4-pro",
+                api_call_count=1,
+            )
+            db.create_session(session_id="normal-main", source="discord", model="gpt-5.5")
+            db.update_token_counts(
+                "normal-main",
+                input_tokens=200,
+                output_tokens=20,
+                billing_provider="openai-codex",
+                model="gpt-5.5",
+                api_call_count=1,
+            )
+            db.create_session(session_id="real-deepseek", source="cli", model="deepseek-v4-pro")
+            db.update_token_counts(
+                "real-deepseek",
+                input_tokens=30,
+                output_tokens=3,
+                billing_provider="deepseek",
+                model="deepseek-v4-pro",
+                api_call_count=1,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/models?days=7")
+        assert resp.status_code == 200
+        models = resp.json()["models"]
+        pairs = {(m["model"], m["provider"]): m for m in models}
+
+        assert ("gpt-5.5", "deepseek") not in pairs
+        assert pairs[("gpt-5.5", "openai-codex")]["sessions"] == 2
+        assert pairs[("deepseek-v4-pro", "deepseek")]["sessions"] == 1
+
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB
 
