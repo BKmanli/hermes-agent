@@ -888,6 +888,8 @@ function SidebarSystemActions({
 
   return (
     <div
+      data-hermes-sidebar-system-actions="true"
+      data-collapsed={collapsed ? "true" : "false"}
       className={cn(
         "shrink-0 flex flex-col",
         "border-t border-current/10",
@@ -910,7 +912,7 @@ function SidebarSystemActions({
 
       <GatewayDot collapsed={collapsed} status={status} tooltipWarmRef={tooltipWarmRef} />
 
-      <ul className="flex flex-col">
+      <ul className="flex flex-col" data-hermes-system-actions-list="true">
         {items.map((item) => (
           <SystemActionButton
             key={item.action}
@@ -946,10 +948,12 @@ function SystemActionButton({
   return (
     <li
       ref={liRef}
+      data-hermes-system-action={item.action}
       onMouseEnter={collapsed ? () => setHovered(true) : undefined}
       onMouseLeave={collapsed ? () => setHovered(false) : undefined}
     >
       <button
+        data-hermes-system-action-button="true"
         onClick={onClick}
         disabled={disabled}
         aria-busy={busy}
@@ -982,7 +986,7 @@ function SystemActionButton({
           />
         )}
 
-        <span className={cn(
+        <span data-hermes-system-action-label="true" className={cn(
           "truncate transition-opacity duration-300",
           collapsed ? "lg:opacity-0" : "lg:opacity-100",
         )}>

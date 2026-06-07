@@ -77,6 +77,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
   if (error) {
     return (
       <div
+        data-hermes-auth-widget="error"
         className={cn(
           "px-5 py-1.5 text-[0.65rem] tracking-[0.05em] text-muted-foreground/70",
           className,
@@ -92,6 +93,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     // when the data arrives.
     return (
       <div
+        data-hermes-auth-widget="loading"
         className={cn(
           "h-7 px-5 py-1.5 text-[0.65rem] text-muted-foreground/40",
           className,
@@ -114,6 +116,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
 
   return (
     <div
+      data-hermes-auth-widget="ready"
       className={cn(
         "flex shrink-0 items-center justify-between gap-2",
         "px-5 py-1.5",
@@ -125,16 +128,17 @@ export function AuthWidget({ className }: AuthWidgetProps) {
       aria-label={`Logged in as ${label} via ${me.provider}`}
       title={`Logged in as ${label} via ${me.provider}`}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <div data-hermes-auth-identity="true" className="flex min-w-0 flex-1 items-center gap-1.5">
         <span className="truncate font-mono text-foreground/90" title={me.user_id}>
           {label}
         </span>
         <span className="shrink-0 text-muted-foreground/50">·</span>
-        <span className="truncate text-muted-foreground/70">
+        <span data-hermes-auth-provider="true" className="truncate text-muted-foreground/70">
           {me.provider}
         </span>
       </div>
       <button
+        data-hermes-auth-logout="true"
         type="button"
         onClick={handleLogout}
         className={cn(
