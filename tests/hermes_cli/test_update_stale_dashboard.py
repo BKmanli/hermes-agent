@@ -16,13 +16,18 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from hermes_cli.main import (
+    _dashboard_command_matches_current_install,
+    _dashboard_command_matches_port,
+    _find_dashboard_pids_for_startup_port,
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
+    _stop_existing_dashboard_for_startup,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
 
@@ -45,16 +50,24 @@ def _refresh_bindings_against_live_module():
     ordering within the worker.  The fix lives in the test module because
     the two pollutants above are load-bearing for their own tests.
     """
+    global _dashboard_command_matches_current_install
+    global _dashboard_command_matches_port
+    global _find_dashboard_pids_for_startup_port
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
+    global _stop_existing_dashboard_for_startup
     global _warn_stale_dashboard_processes
 
     live = sys.modules.get("hermes_cli.main")
     if live is None:
         live = importlib.import_module("hermes_cli.main")
 
+    _dashboard_command_matches_current_install = live._dashboard_command_matches_current_install
+    _dashboard_command_matches_port = live._dashboard_command_matches_port
+    _find_dashboard_pids_for_startup_port = live._find_dashboard_pids_for_startup_port
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
+    _stop_existing_dashboard_for_startup = live._stop_existing_dashboard_for_startup
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
     yield
 
@@ -226,6 +239,70 @@ class TestFindStaleDashboardPids:
             )
             pids = _find_stale_dashboard_pids(exclude_pids={12345})
         assert pids == []
+
+
+class TestDashboardStartupCleanup:
+    """Startup cleanup stops real same-port dashboard leftovers."""
+
+    def test_port_matcher_handles_explicit_equals_space_and_default(self):
+        assert _dashboard_command_matches_port("hermes dashboard --port 9119", 9119)
+        assert _dashboard_command_matches_port("hermes dashboard --port=9120", 9120)
+        assert _dashboard_command_matches_port("hermes dashboard", 9119)
+        assert not _dashboard_command_matches_port("hermes dashboard --port 9129", 9119)
+        assert not _dashboard_command_matches_port("hermes dashboard --port nope", 9119)
+
+    def test_current_install_guard_excludes_sibling_checkout(self):
+        with patch("hermes_cli.main.PROJECT_ROOT", Path("/Users/me/.hermes/hermes-agent")):
+            assert _dashboard_command_matches_current_install(
+                "/Users/me/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main dashboard"
+            )
+            assert not _dashboard_command_matches_current_install(
+                "/Users/me/.hermes_old/hermes-agent/venv/bin/python -m hermes_cli.main dashboard"
+            )
+            # Console scripts do not expose their install path; keep them in
+            # scope and rely on port matching.
+            assert _dashboard_command_matches_current_install("hermes dashboard --port 9119")
+
+    def test_find_dashboard_pids_for_startup_port_includes_wrappers(self):
+        project = Path("/Users/me/.hermes/hermes-agent")
+        stdout = "\n".join([
+            _ps_line(11111, f"{project}/venv/bin/python -m hermes_cli.main dashboard --port 9119"),
+            _ps_line(22222, f"/bin/bash -lic set +m; {project}/venv/bin/python -m hermes_cli.main dashboard --host 127.0.0.1 --port 9119 --no-open"),
+            _ps_line(33333, f"{project}/venv/bin/python -m hermes_cli.main dashboard --port 9129"),
+            _ps_line(44444, "/Users/me/.hermes_old/hermes-agent/venv/bin/python -m hermes_cli.main dashboard --port 9119"),
+            _ps_line(55555, "python3 -m hermes_cli.main chat -q 'dashboard --port 9119'"),
+            _ps_line(os.getpid(), f"{project}/venv/bin/python -m hermes_cli.main dashboard --port 9119"),
+        ]) + "\n"
+        with patch("hermes_cli.main.PROJECT_ROOT", project), \
+             patch("subprocess.run", side_effect=_ps_runner(stdout)):
+            pids = _find_dashboard_pids_for_startup_port(9119)
+
+        assert pids == [11111, 22222]
+
+    def test_find_dashboard_pids_for_startup_port_excludes_current_parent(self):
+        project = Path("/Users/me/.hermes/hermes-agent")
+        stdout = "\n".join([
+            _ps_line(11111, f"{project}/venv/bin/python -m hermes_cli.main dashboard --port 9119"),
+            _ps_line(22222, f"/bin/bash -lic set +m; {project}/venv/bin/python -m hermes_cli.main dashboard --port 9119"),
+        ]) + "\n"
+        with patch("hermes_cli.main.PROJECT_ROOT", project), \
+             patch("os.getppid", return_value=22222), \
+             patch("subprocess.run", side_effect=_ps_runner(stdout)):
+            pids = _find_dashboard_pids_for_startup_port(9119)
+
+        assert pids == [11111]
+
+    def test_startup_cleanup_kills_matching_pids_without_restart_hint(self):
+        with patch("hermes_cli.main._find_dashboard_pids_for_startup_port", return_value=[111, 222]) as find, \
+             patch("hermes_cli.main._stop_dashboard_pids") as stop:
+            _stop_existing_dashboard_for_startup(9119)
+
+        find.assert_called_once_with(9119)
+        stop.assert_called_once_with(
+            [111, 222],
+            reason="replacing existing dashboard backend on port 9119",
+            restart_hint=False,
+        )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")

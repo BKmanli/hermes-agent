@@ -7755,6 +7755,242 @@ def _find_stale_dashboard_pids(
     return dashboard_pids
 
 
+def _dashboard_cmdline_tokens(command: str) -> list[str]:
+    try:
+        import shlex as _shlex
+
+        return _shlex.split(command)
+    except Exception:
+        return str(command or "").split()
+
+
+def _dashboard_command_matches_port(command: str, port: int) -> bool:
+    """Return True when a dashboard cmdline targets *port*.
+
+    ``hermes dashboard`` defaults to 9119 when no explicit ``--port`` is
+    present. Wrapper commands are intentionally supported because failed
+    dashboard restarts can leave both the wrapper and the backend process
+    behind.
+    """
+    target = int(port)
+    tokens = _dashboard_cmdline_tokens(command)
+    for idx, token in enumerate(tokens):
+        if token == "--port" and idx + 1 < len(tokens):
+            try:
+                return int(tokens[idx + 1]) == target
+            except (TypeError, ValueError):
+                return False
+        if token.startswith("--port="):
+            try:
+                return int(token.split("=", 1)[1]) == target
+            except (TypeError, ValueError):
+                return False
+    return target == 9119
+
+
+def _dashboard_command_matches_current_install(command: str) -> bool:
+    """Best-effort guard against stopping dashboards from another checkout.
+
+    If a dashboard cmdline contains an explicit Hermes checkout path, only
+    treat it as ours when that path belongs to this ``PROJECT_ROOT``. Generic
+    console-script invocations such as ``hermes dashboard`` have no safe path
+    to compare, so they remain in scope; port matching still prevents unrelated
+    dashboards on other ports from being touched.
+    """
+    project_root = str(PROJECT_ROOT)
+    command = str(command or "")
+    if project_root in command:
+        return True
+    tokens = _dashboard_cmdline_tokens(command)
+    hermes_path_tokens = [
+        token
+        for token in tokens
+        if ("/" in token or "\\" in token)
+        and ("hermes-agent" in token or "hermes_cli" in token or token.endswith("hermes"))
+    ]
+    if not hermes_path_tokens:
+        return True
+    return any(project_root in token for token in hermes_path_tokens)
+
+
+def _find_dashboard_pids_for_startup_port(
+    port: int,
+    *,
+    exclude_pids: set[int] | None = None,
+) -> list[int]:
+    """Return existing same-install dashboard PIDs for the startup port.
+
+    This is stricter than ``_find_stale_dashboard_pids``: it only returns
+    dashboards for the port the new backend is about to bind. It is used on
+    ``hermes dashboard`` startup to stop failed/orphaned backends and wrappers
+    before launching the replacement.
+    """
+    patterns = [
+        "hermes dashboard",
+        "hermes_cli.main dashboard",
+        "hermes_cli/main.py dashboard",
+    ]
+    self_pid = os.getpid()
+    # A dashboard may be launched through a shell wrapper (for example the
+    # gateway/tool runner's `/bin/bash -lic ... hermes dashboard ...`).  The
+    # wrapper cmdline also matches our dashboard patterns, but killing it while
+    # starting the replacement makes the just-launched child look like a failed
+    # run.  Exclude our immediate parent; stale wrappers from older launches are
+    # orphaned under PID 1 and remain eligible for cleanup.
+    excluded = set(exclude_pids or set()) | {self_pid, os.getppid()}
+    dashboard_pids: list[int] = []
+
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                encoding="utf-8",
+                errors="ignore",
+            )
+            if result.returncode != 0 or result.stdout is None:
+                return []
+            current_cmd = ""
+            for line in result.stdout.split("\n"):
+                line = line.strip()
+                if line.startswith("CommandLine="):
+                    current_cmd = line[len("CommandLine=") :]
+                elif line.startswith("ProcessId="):
+                    try:
+                        pid = int(line[len("ProcessId=") :])
+                    except ValueError:
+                        continue
+                    if (
+                        pid not in excluded
+                        and any(p in current_cmd for p in patterns)
+                        and _dashboard_command_matches_port(current_cmd, port)
+                        and _dashboard_command_matches_current_install(current_cmd)
+                    ):
+                        dashboard_pids.append(pid)
+        else:
+            result = subprocess.run(
+                ["ps", "-A", "-o", "pid=,command="],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                for line in getattr(result, "stdout", "").split("\n"):
+                    stripped = line.strip()
+                    if not stripped or "grep" in stripped:
+                        continue
+                    parts = stripped.split(None, 1)
+                    if len(parts) != 2:
+                        continue
+                    try:
+                        pid = int(parts[0])
+                    except ValueError:
+                        continue
+                    command = parts[1]
+                    if (
+                        pid not in excluded
+                        and any(p in command for p in patterns)
+                        and _dashboard_command_matches_port(command, port)
+                        and _dashboard_command_matches_current_install(command)
+                    ):
+                        dashboard_pids.append(pid)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+
+    return dashboard_pids
+
+
+def _stop_dashboard_pids(
+    pids: list[int],
+    *,
+    reason: str,
+    restart_hint: bool = True,
+) -> None:
+    if not pids:
+        return
+
+    print()
+    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
+
+    killed: list[int] = []
+    failed: list[tuple[int, str]] = []
+
+    if sys.platform == "win32":
+        for pid in pids:
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    killed.append(pid)
+                else:
+                    failed.append((pid, (result.stderr or result.stdout or "").strip()))
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+                failed.append((pid, str(e)))
+    else:
+        import signal as _signal
+        import time as _time
+
+        # SIGTERM first — give each process a chance to shut down cleanly
+        # (uvicorn closes its socket, flushes logs, etc.).
+        for pid in pids:
+            try:
+                os.kill(pid, _signal.SIGTERM)
+            except ProcessLookupError:
+                killed.append(pid)
+            except (PermissionError, OSError) as e:
+                failed.append((pid, str(e)))
+
+        # Poll for exit up to ~3s total.
+        deadline = _time.monotonic() + 3.0
+        pending = [
+            p for p in pids if p not in killed and p not in {f[0] for f in failed}
+        ]
+        while pending and _time.monotonic() < deadline:
+            _time.sleep(0.1)
+            still_pending = []
+            from gateway.status import _pid_exists
+            for pid in pending:
+                if _pid_exists(pid):
+                    still_pending.append(pid)
+                else:
+                    killed.append(pid)
+            pending = still_pending
+
+        # SIGKILL any survivors.
+        for pid in pending:
+            try:
+                os.kill(pid, _signal.SIGKILL)
+                killed.append(pid)
+            except ProcessLookupError:
+                killed.append(pid)
+            except (PermissionError, OSError) as e:
+                failed.append((pid, str(e)))
+
+    for pid in killed:
+        print(f"    ✓ stopped PID {pid}")
+    for pid, err_msg in failed:
+        print(f"    ✗ failed to stop PID {pid}: {err_msg}")
+
+    if killed and restart_hint:
+        print("  Restart the dashboard when you're ready:")
+        print("    hermes dashboard --port <port>")
+
+
+def _stop_existing_dashboard_for_startup(port: int) -> None:
+    pids = _find_dashboard_pids_for_startup_port(port)
+    _stop_dashboard_pids(
+        pids,
+        reason=f"replacing existing dashboard backend on port {port}",
+        restart_hint=False,
+    )
+
+
 def _print_curator_first_run_notice() -> None:
     """Print a short heads-up about the skill curator after `hermes update`.
 
@@ -7924,81 +8160,7 @@ def _kill_stale_dashboard_processes(
             exclude = parsed
 
     pids = _find_stale_dashboard_pids(exclude_pids=exclude)
-    if not pids:
-        return
-
-    print()
-    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
-
-    killed: list[int] = []
-    failed: list[tuple[int, str]] = []
-
-    if sys.platform == "win32":
-        for pid in pids:
-            try:
-                result = subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/F"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if result.returncode == 0:
-                    killed.append(pid)
-                else:
-                    failed.append((pid, (result.stderr or result.stdout or "").strip()))
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
-                failed.append((pid, str(e)))
-    else:
-        import signal as _signal
-        import time as _time
-
-        # SIGTERM first — give each process a chance to shut down cleanly
-        # (uvicorn closes its socket, flushes logs, etc.).
-        for pid in pids:
-            try:
-                os.kill(pid, _signal.SIGTERM)
-            except ProcessLookupError:
-                # Already gone — count as killed.
-                killed.append(pid)
-            except (PermissionError, OSError) as e:
-                failed.append((pid, str(e)))
-
-        # Poll for exit up to ~3s total.
-        deadline = _time.monotonic() + 3.0
-        pending = [
-            p for p in pids if p not in killed and p not in {f[0] for f in failed}
-        ]
-        while pending and _time.monotonic() < deadline:
-            _time.sleep(0.1)
-            still_pending = []
-            # On Windows, os.kill(pid, 0) is NOT a no-op. Route through
-            # the cross-platform existence check.
-            from gateway.status import _pid_exists
-            for pid in pending:
-                if _pid_exists(pid):
-                    still_pending.append(pid)
-                else:
-                    killed.append(pid)
-            pending = still_pending
-
-        # SIGKILL any survivors.
-        for pid in pending:
-            try:
-                os.kill(pid, _signal.SIGKILL)
-                killed.append(pid)
-            except ProcessLookupError:
-                killed.append(pid)
-            except (PermissionError, OSError) as e:
-                failed.append((pid, str(e)))
-
-    for pid in killed:
-        print(f"    ✓ stopped PID {pid}")
-    for pid, err_msg in failed:
-        print(f"    ✗ failed to stop PID {pid}: {err_msg}")
-
-    if killed:
-        print("  Restart the dashboard when you're ready:")
-        print("    hermes dashboard --port <port>")
+    _stop_dashboard_pids(pids, reason=reason, restart_hint=True)
 
 
 # Back-compat alias: some tests and any external callers may import the old
@@ -12399,6 +12561,11 @@ def cmd_dashboard(args):
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
+    # If an earlier dashboard launch on this port failed halfway, it can leave
+    # a Python backend/wrapper alive without owning the listening socket. Stop
+    # same-port predecessors now, after build/discovery succeeded but before
+    # binding the replacement, so errored dashboards do not accumulate.
+    _stop_existing_dashboard_for_startup(int(args.port))
     start_server(
         host=args.host,
         port=args.port,
