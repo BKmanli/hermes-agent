@@ -1465,6 +1465,13 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        # Force the dashboard's durable cookie auth gate even when the backend
+        # is bound to loopback. This is the preferred reverse-proxy shape for
+        # LAN exposure: keep uvicorn on 127.0.0.1 and let Caddy/nginx expose a
+        # public port while Hermes still issues persistent login cookies.
+        # ``--insecure`` / allow_public still explicitly disables the gate.
+        # Env override: HERMES_DASHBOARD_FORCE_AUTH=true.
+        "force_auth": False,
         # OAuth gate configuration (engaged when ``--host`` is set and
         # ``--insecure`` is not). The bundled Nous Portal plugin reads
         # both keys at startup; they are the canonical surface for these

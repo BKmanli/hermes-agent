@@ -84,6 +84,40 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
 
+
+class TestDashboardAuthGatePolicy:
+    """Unit-test when the cookie auth gate should engage."""
+
+    def test_loopback_bind_skips_auth_by_default(self):
+        from hermes_cli.web_server import should_require_auth
+
+        assert should_require_auth("127.0.0.1", allow_public=False) is False
+
+    def test_force_auth_engages_gate_even_on_loopback(self):
+        from hermes_cli.web_server import should_require_auth
+
+        assert (
+            should_require_auth(
+                "127.0.0.1",
+                allow_public=False,
+                force_auth=True,
+            )
+            is True
+        )
+
+    def test_insecure_allow_public_overrides_force_auth(self):
+        from hermes_cli.web_server import should_require_auth
+
+        assert (
+            should_require_auth(
+                "127.0.0.1",
+                allow_public=True,
+                force_auth=True,
+            )
+            is False
+        )
+
+
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware
     rejects bad Host headers with 400."""

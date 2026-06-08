@@ -12571,6 +12571,7 @@ def cmd_dashboard(args):
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
+        force_auth=getattr(args, "force_auth", False),
     )
 
 
@@ -15855,6 +15856,14 @@ Examples:
         "--insecure",
         action="store_true",
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
+    )
+    dashboard_parser.add_argument(
+        "--force-auth",
+        action="store_true",
+        help=(
+            "Force the dashboard cookie auth gate even on loopback binds. "
+            "Use for trusted reverse proxies such as Caddy :9120 -> 127.0.0.1:9119."
+        ),
     )
     dashboard_parser.add_argument(
         "--skip-build",

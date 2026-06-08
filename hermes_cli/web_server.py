@@ -218,20 +218,55 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
-def should_require_auth(host: str, allow_public: bool) -> bool:
-    """Return True iff the dashboard OAuth auth gate must be active.
+def should_require_auth(
+    host: str,
+    allow_public: bool,
+    force_auth: bool = False,
+) -> bool:
+    """Return True iff the dashboard cookie auth gate must be active.
 
     Truth table:
-      host == loopback                              → False (no auth)
-      host != loopback AND allow_public (--insecure)→ False (legacy escape hatch)
-      host != loopback AND NOT allow_public         → True  (gate engages)
+      allow_public (--insecure)                     → False (legacy escape hatch)
+      force_auth                                    → True  (Caddy/loopback proxy mode)
+      host == loopback                              → False (local dev/desktop mode)
+      host != loopback                              → True  (gate engages)
 
     "Loopback" matches the same set used by ``--insecure`` enforcement in
     ``start_server``: 127.0.0.1, localhost, ::1. RFC1918 / CGNAT / link-local
     are deliberately treated as PUBLIC — a hostile device on the same LAN is
-    exactly the threat model the gate is designed for.
+    exactly the threat model the gate is designed for. ``force_auth`` covers
+    the safe reverse-proxy shape where the backend intentionally stays bound
+    to loopback (for example Caddy :9120 → 127.0.0.1:9119) but the public
+    proxy should still get the durable cookie login gate instead of the legacy
+    injected session-token mode.
     """
-    return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
+    if allow_public:
+        return False
+    if force_auth:
+        return True
+    return host not in _LOOPBACK_HOST_VALUES
+
+
+def _dashboard_force_auth_enabled(cli_force_auth: bool = False) -> bool:
+    """Resolve dashboard force-auth from CLI, env, then config.
+
+    This intentionally lets a loopback-bound backend engage the same durable
+    cookie auth gate normally reserved for non-loopback binds. It is the clean
+    reverse-proxy mode for setups such as Caddy :9120 → 127.0.0.1:9119 where
+    the backend should stay hidden on loopback but the LAN-facing proxy still
+    needs real login sessions.
+    """
+    if cli_force_auth:
+        return True
+
+    raw_env = os.environ.get("HERMES_DASHBOARD_FORCE_AUTH")
+    if raw_env is not None and raw_env.strip():
+        return env_var_enabled("HERMES_DASHBOARD_FORCE_AUTH")
+
+    try:
+        return bool(cfg_get(load_config(), "dashboard", "force_auth", default=False))
+    except Exception:
+        return False
 
 
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
@@ -847,6 +882,7 @@ async def get_status():
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
         "auth_required": auth_required,
+        "auth_forced": bool(getattr(app.state, "auth_forced", False)),
         "auth_providers": auth_providers,
     }
 
@@ -9391,6 +9427,7 @@ def start_server(
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
+    force_auth: bool = False,
 ):
     """Start the web UI server."""
     import uvicorn
@@ -9399,7 +9436,12 @@ def start_server(
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
-    app.state.auth_required = should_require_auth(host, allow_public)
+    app.state.auth_forced = _dashboard_force_auth_enabled(force_auth)
+    app.state.auth_required = should_require_auth(
+        host,
+        allow_public,
+        force_auth=bool(app.state.auth_forced),
+    )
 
     if app.state.auth_required:
         # Phase 3.5: the gate engages on non-loopback binds.  The legacy
@@ -9414,15 +9456,18 @@ def start_server(
             # without it the operator would only see "no providers" which
             # is misleading when the provider IS installed but unconfigured.
             skip_reasons: list[str] = []
-            try:
-                from plugins.dashboard_auth import nous as _nous_plugin
-
-                if _nous_plugin.LAST_SKIP_REASON:
-                    skip_reasons.append(
-                        f"  • nous: {_nous_plugin.LAST_SKIP_REASON}"
+            for _provider_name in ("nous", "basic"):
+                try:
+                    _plugin = __import__(
+                        f"plugins.dashboard_auth.{_provider_name}",
+                        fromlist=["LAST_SKIP_REASON"],
                     )
-            except Exception:
-                pass
+                    if getattr(_plugin, "LAST_SKIP_REASON", ""):
+                        skip_reasons.append(
+                            f"  • {_provider_name}: {_plugin.LAST_SKIP_REASON}"
+                        )
+                except Exception:
+                    pass
 
             if skip_reasons:
                 raise SystemExit(
